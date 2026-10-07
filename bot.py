@@ -13,8 +13,11 @@ PREFIX = os.getenv("PREFIX", "!")
 # On Railway, mount a volume (e.g. /data) and set DATA_FILE=/data/giveaways.json
 # so giveaways survive redeploys.
 DATA_FILE = os.getenv("DATA_FILE", "giveaways.json")
-COLOR = 0x5865F2
-END_COLOR = 0x2B2D31
+COLOR = 0x7C3AED       # purple
+END_COLOR = 0x3B1F66   # darker purple when ended
+BANNER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.gif")
+BANNER_NAME = "banner.gif"
+GIFT_EMOJI = discord.PartialEmoji(name="ELTgift", id=1557224616861106186)
 
 giveaways: dict[str, dict] = {}
 
@@ -49,7 +52,9 @@ def parse_duration(text: str) -> Optional[int]:
 
 def build_embed(g: dict) -> discord.Embed:
     ended = g["ended"]
-    e = discord.Embed(title=f"🎉 {g['prize']}", color=END_COLOR if ended else COLOR)
+    e = discord.Embed(title=g["prize"], color=END_COLOR if ended else COLOR)
+    if os.path.exists(BANNER_FILE):
+        e.set_image(url=f"attachment://{BANNER_NAME}")
     lines = [f"**Hosted by:** <@{g['host_id']}>", f"**Winners:** {g['winners']}"]
     if g.get("required_role"):
         lines.append(f"**Required role:** <@&{g['required_role']}>")
@@ -69,7 +74,7 @@ class GiveawayView(discord.ui.View):
         super().__init__(timeout=None)
         self.enter.disabled = disabled
 
-    @discord.ui.button(label="Enter", emoji="🎉", style=discord.ButtonStyle.primary, custom_id="giveaway:enter")
+    @discord.ui.button(label="Enter", emoji=GIFT_EMOJI, style=discord.ButtonStyle.secondary, custom_id="giveaway:enter")
     async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
         g = giveaways.get(str(interaction.message.id))
         if not g or g["ended"]:
@@ -177,7 +182,11 @@ async def gstart(ctx: commands.Context, duration: str, winners: int, *, prize: s
         "ended": False,
         "winner_ids": [],
     }
-    msg = await ctx.send(embed=build_embed(g), view=GiveawayView())
+    file = discord.File(BANNER_FILE, filename=BANNER_NAME) if os.path.exists(BANNER_FILE) else None
+    if file:
+        msg = await ctx.send(embed=build_embed(g), view=GiveawayView(), file=file)
+    else:
+        msg = await ctx.send(embed=build_embed(g), view=GiveawayView())
     giveaways[str(msg.id)] = g
     save()
     try:
