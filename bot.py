@@ -12,10 +12,9 @@ Commands (need Manage Server):
 What's new in v3
     - The giveaway is ONE card (Discord "Components V2"): title, banner, details, the big entries
       number AND the Enter button are all inside the same purple card.
-    - Enter and Leave are two buttons inside the card. Press Enter and your entry is counted, press
-      Leave and it is removed. No private messages: the entries number on the card just updates.
-      (Discord shows the same buttons to everyone, so one button can't say "Leave" only to people who
-      entered. Two buttons is the clean way to do it.)
+    - ONE button inside the card. Press it to enter, press it again to leave. Silent: no private
+      messages, the entries number on the card just updates. The label flips to "Leave" after an
+      entry and back to "Enter" after a leave (set BUTTON_MODE=static for a fixed "Enter / Leave").
     - Everything from v2 is kept: winner embeds with avatars, DMs, re-check at the end,
       reroll, cancel, 30-day archive.
 
@@ -52,6 +51,9 @@ GIFT_EMOJI = discord.PartialEmoji(name="ELTgift", id=1557224616861106186)
 DM_WINNERS = os.getenv("DM_WINNERS", "1") != "0"
 KEEP_ENDED_DAYS = 30
 MAX_PRIZE_LEN = 200
+# "flip"  = the one button says Leave after someone enters, Enter after someone leaves
+# "static" = the one button always says "Enter / Leave"
+BUTTON_MODE = os.getenv("BUTTON_MODE", "flip")
 FOOTER = "ELITE SYSTEM"
 NO_PINGS = discord.AllowedMentions.none()   # the card mentions people, it must never ping them
 
@@ -149,23 +151,24 @@ async def pick_winners(guild: Optional[discord.Guild], g: dict, count: int, excl
 
 # ---------- the giveaway card ----------
 class EnterRow(discord.ui.ActionRow):
-    """Enter + Leave buttons. They live INSIDE the card, no private messages."""
+    """ONE button inside the card. Press it to enter, press it again to leave."""
 
-    def __init__(self, disabled: bool = False):
+    def __init__(self, disabled: bool = False, leaving: bool = False):
         super().__init__()
         if disabled:
-            self.enter.disabled = True
-            self.enter.label = "Ended"
-            self.enter.emoji = None
-            self.remove_item(self.leave)
+            self.toggle.disabled = True
+            self.toggle.label = "Ended"
+            self.toggle.emoji = None
+        elif BUTTON_MODE == "static":
+            self.toggle.label = "Enter / Leave"
+        elif leaving:
+            self.toggle.label = "Leave"
+            self.toggle.emoji = None
+            self.toggle.style = discord.ButtonStyle.secondary
 
     @discord.ui.button(label="Enter", emoji=GIFT_EMOJI, style=discord.ButtonStyle.primary, custom_id="giveaway:enter")
-    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await set_entry(interaction, join=True)
-
-    @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary, custom_id="giveaway:leave")
-    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await set_entry(interaction, join=False)
+    async def toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await toggle_entry(interaction)
 
 
 class GiveawayView(discord.ui.LayoutView):
@@ -223,7 +226,7 @@ class GiveawayView(discord.ui.LayoutView):
             kids.append(sep())
             kids.append(T(entries_heading(len(g["entries"]))))
 
-        kids.append(EnterRow(disabled=ended))
+        kids.append(EnterRow(disabled=ended, leaving=bool(g and g.get("last_in"))))
         if g:
             kids.append(discord.ui.TextDisplay(f"-# {FOOTER}"))
 
@@ -245,30 +248,30 @@ def has_role(user, role_id: Optional[int]) -> bool:
     return not role_id or any(r.id == role_id for r in getattr(user, "roles", []))
 
 
-async def set_entry(interaction: discord.Interaction, join: bool):
-    """Enter / Leave pressed. Silent: the card itself updates (entries count), nothing else is posted."""
+async def toggle_entry(interaction: discord.Interaction):
+    """Button pressed: not in -> enter, already in -> leave. Silent, the card just updates."""
     mid = str(interaction.message.id)
     g = giveaways.get(mid)
     if not g or g["ended"]:
         return await interaction.response.send_message(embed=note("This giveaway has ended."), ephemeral=True)
 
     uid = interaction.user.id
-    if join:
+    if uid in g["entries"]:
+        g["entries"].remove(uid)
+        g["last_in"] = False
+    else:
         if not has_role(interaction.user, g.get("required_role")):
             return await interaction.response.send_message(
                 embed=note(f"You need <@&{g['required_role']}> to enter this giveaway."), ephemeral=True
             )
-        if uid not in g["entries"]:
-            g["entries"].append(uid)
-            save()
-    elif uid in g["entries"]:
-        g["entries"].remove(uid)
-        save()
+        g["entries"].append(uid)
+        g["last_in"] = True
+    save()
 
     if g.get("v3"):
         await interaction.response.edit_message(view=GiveawayView(g), allowed_mentions=NO_PINGS)
     else:   # giveaway made with v2: its message can't be redrawn as a card
-        text = "### You're in" if join else "### You left the giveaway"
+        text = "### You're in" if g["last_in"] else "### You left the giveaway"
         await interaction.response.send_message(embed=note(text), ephemeral=True)
 
 
