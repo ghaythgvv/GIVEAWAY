@@ -12,9 +12,9 @@ Commands (need Manage Server):
 What's new in v3
     - The giveaway is ONE card (Discord "Components V2"): title, banner, details, the big entries
       number AND the Enter button are all inside the same purple card.
-    - ONE button inside the card. Press it to enter, press it again to leave. Silent: no private
-      messages, the entries number on the card just updates. The label flips to "Leave" after an
-      entry and back to "Enter" after a leave (set BUTTON_MODE=static for a fixed "Enter / Leave").
+    - ONE button inside the card: "Enter / Leave". Press it to enter, press it again to leave. Silent:
+      no private messages, the entries number on the card just updates. The label is the same for
+      every member on purpose (Discord can't show a different label per person).
     - Everything from v2 is kept: winner embeds with avatars, DMs, re-check at the end,
       reroll, cancel, 30-day archive.
 
@@ -51,9 +51,9 @@ GIFT_EMOJI = discord.PartialEmoji(name="ELTgift", id=1557224616861106186)
 DM_WINNERS = os.getenv("DM_WINNERS", "1") != "0"
 KEEP_ENDED_DAYS = 30
 MAX_PRIZE_LEN = 200
-# "flip"  = the one button says Leave after someone enters, Enter after someone leaves
-# "static" = the one button always says "Enter / Leave"
-BUTTON_MODE = os.getenv("BUTTON_MODE", "flip")
+# "static" = (default) the one button always says "Enter / Leave", correct for everyone
+# "flip"   = the label follows the LAST person who clicked, so it is wrong for everyone else
+BUTTON_MODE = os.getenv("BUTTON_MODE", "static")
 FOOTER = "ELITE SYSTEM"
 NO_PINGS = discord.AllowedMentions.none()   # the card mentions people, it must never ping them
 
