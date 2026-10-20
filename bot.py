@@ -1,5 +1,5 @@
 """
-ELITE SYSTEM - Giveaway bot  (v2)
+ELITE SYSTEM - Giveaway bot  (v3)
 =================================
 Commands (need Manage Server):
     !gstart <duration> <winners> <prize>   start a giveaway (mention a role to require it)
@@ -9,21 +9,21 @@ Commands (need Manage Server):
     !glist                                 active giveaways
     !ghelp                                 this list
 
-What's new in v2
-    - The entries count is a BIG heading on the giveaway (no more tiny footer text).
-    - Cleaner layout: host avatar on top, winners shown with the first winner's avatar once it ended.
-    - The winner message is an EMBED: "Congratulations", the winner big, their avatar, a link back to the
-      giveaway. No emoji. One embed per winner when there are several.
-    - Winners get a DM (set DM_WINNERS=0 to turn it off).
-    - At the end the bot checks every pick again: people who LEFT the server, or lost the required role,
-      can't win (the next entry is drawn instead).
-    - Reroll posts the same winner embeds and updates the giveaway message.
-    - New !gcancel. !glist and !ghelp are embeds. Nicer "you're in / you left" replies.
-    - Fixed: prize longer than Discord's embed title limit crashed the giveaway, one failing giveaway
-      could stop the checker loop, and old ended giveaways piled up in giveaways.json forever
-      (they are kept 30 days so they can still be rerolled).
+What's new in v3
+    - The giveaway is ONE card (Discord "Components V2"): title, banner, details, the big entries
+      number AND the Enter button are all inside the same purple card.
+    - Click Enter and you get a private panel with a Leave button. Click Leave and the same button
+      becomes "Enter again". Click Enter while you're already in and the panel offers Leave.
+      (Discord can't show a different label to every person on one shared button, so the toggle
+      lives in this private panel. The public button stays "Enter".)
+    - Everything from v2 is kept: winner embeds with avatars, DMs, re-check at the end,
+      reroll, cancel, 30-day archive.
 
-Files next to this one:  banner.gif  (optional picture shown inside the giveaway)
+REQUIRES  discord.py >= 2.6   (requirements.txt:  discord.py>=2.6)
+Giveaways created with v2 keep working for winners/DMs/rerolls, but their old message can't be turned
+into the new card - end or cancel them before you deploy v3.
+
+Files next to this one:  banner.gif  (optional picture shown inside the card)
 Railway: add a Volume at /data and set DATA_FILE=/data/giveaways.json so giveaways survive redeploys.
 The Message Content intent must be enabled in the Developer Portal (prefix commands).
 """
@@ -34,7 +34,6 @@ import json
 import time
 import random
 import traceback
-from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -42,8 +41,6 @@ from discord.ext import commands, tasks
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 PREFIX = os.getenv("PREFIX", "!")
-# On Railway, mount a volume (e.g. /data) and set DATA_FILE=/data/giveaways.json
-# so giveaways survive redeploys.
 DATA_FILE = os.getenv("DATA_FILE", "giveaways.json")
 COLOR = 0x7C3AED       # purple
 END_COLOR = 0x3B1F66   # darker purple when ended
@@ -52,10 +49,11 @@ BANNER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banner.g
 BANNER_NAME = "banner.gif"
 GIFT_EMOJI = discord.PartialEmoji(name="ELTgift", id=1557224616861106186)
 
-DM_WINNERS = os.getenv("DM_WINNERS", "1") != "0"   # send winners a DM
-KEEP_ENDED_DAYS = 30                                # ended giveaways stay rerollable this long
+DM_WINNERS = os.getenv("DM_WINNERS", "1") != "0"
+KEEP_ENDED_DAYS = 30
 MAX_PRIZE_LEN = 200
 FOOTER = "ELITE SYSTEM"
+NO_PINGS = discord.AllowedMentions.none()   # the card mentions people, it must never ping them
 
 giveaways: dict[str, dict] = {}
 
@@ -76,7 +74,7 @@ def save():
         tmp = DATA_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(giveaways, f)
-        os.replace(tmp, DATA_FILE)   # never leaves a half-written file behind
+        os.replace(tmp, DATA_FILE)
     except OSError as e:
         print(f"Couldn't save {DATA_FILE}: {e}")
 
@@ -99,53 +97,7 @@ def note(text: str, color: int = COLOR) -> discord.Embed:
 
 
 def entries_heading(n: int) -> str:
-    """The big entries line on the giveaway."""
     return f"## {n:,} {'Entry' if n == 1 else 'Entries'}"
-
-
-def build_embed(g: dict) -> discord.Embed:
-    ended = g["ended"]
-    n = len(g["entries"])
-    e = discord.Embed(title=g["prize"], color=END_COLOR if ended else COLOR)
-
-    if os.path.exists(BANNER_FILE):
-        e.set_image(url=f"attachment://{BANNER_NAME}")
-
-    e.set_author(
-        name="GIVEAWAY ENDED" if ended else "GIVEAWAY",
-        icon_url=g.get("host_avatar") or None,
-    )
-
-    lines = []
-    if ended:
-        winners = g.get("winner_ids", [])
-        lines.append(f"**Hosted by**  <@{g['host_id']}>")
-        lines.append(f"**Ended**  <t:{g.get('ended_ts', g['end_ts'])}:R>")
-        lines.append("")
-        if winners:
-            lines.append(f"**{'Winner' if len(winners) == 1 else 'Winners'}**")
-            lines.extend(f"<@{i}>" for i in winners)
-        else:
-            lines.append("**No valid entries**")
-        avatars = g.get("winner_avatars") or []
-        if avatars:
-            e.set_thumbnail(url=avatars[0])
-    else:
-        lines.append("Click the button below to enter!")
-        lines.append("")
-        lines.append(f"**Hosted by**  <@{g['host_id']}>")
-        lines.append(f"**Winners**  {g['winners']}")
-        if g.get("required_role"):
-            lines.append(f"**Required role**  <@&{g['required_role']}>")
-        lines.append(f"**Ends**  <t:{g['end_ts']}:R>  (<t:{g['end_ts']}:f>)")
-
-    lines.append("")
-    lines.append(entries_heading(n))
-    e.description = "\n".join(lines)
-
-    e.set_footer(text=FOOTER)
-    e.timestamp = datetime.fromtimestamp(g.get("ended_ts", g["end_ts"]) if ended else g["end_ts"], tz=timezone.utc)
-    return e
 
 
 def jump_url(g: dict, mid: str) -> str:
@@ -153,7 +105,6 @@ def jump_url(g: dict, mid: str) -> str:
 
 
 async def resolve_user(bot: commands.Bot, guild: Optional[discord.Guild], uid: int):
-    """Member if we have them, otherwise the plain user (needed for the avatar)."""
     user = (guild.get_member(uid) if guild else None) or bot.get_user(uid)
     if user is None:
         try:
@@ -178,7 +129,7 @@ async def still_valid(guild: Optional[discord.Guild], uid: int, role_id: Optiona
         except discord.NotFound:
             return False
         except discord.HTTPException:
-            return True   # can't check right now: don't punish the entry
+            return True
     if role_id and not any(r.id == role_id for r in member.roles):
         return False
     return True
@@ -194,6 +145,160 @@ async def pick_winners(guild: Optional[discord.Guild], g: dict, count: int, excl
         if await still_valid(guild, uid, g.get("required_role")):
             picked.append(uid)
     return picked
+
+
+# ---------- the giveaway card ----------
+class EnterRow(discord.ui.ActionRow):
+    """The Enter button. It lives INSIDE the card."""
+
+    def __init__(self, disabled: bool = False):
+        super().__init__()
+        if disabled:
+            self.enter.disabled = True
+            self.enter.label = "Ended"
+            self.enter.emoji = None
+
+    @discord.ui.button(label="Enter", emoji=GIFT_EMOJI, style=discord.ButtonStyle.primary, custom_id="giveaway:enter")
+    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await handle_enter(interaction)
+
+
+class GiveawayView(discord.ui.LayoutView):
+    """One purple card: title, banner, details, big entries number, Enter button."""
+
+    def __init__(self, g: Optional[dict] = None):
+        super().__init__(timeout=None)
+        ended = bool(g and g["ended"])
+        kids: list = []
+
+        if g:
+            T = discord.ui.TextDisplay
+            sep = lambda: discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+
+            # --- header: label + prize, with an avatar on the right
+            thumb = None
+            if ended and g.get("winner_avatars"):
+                thumb = g["winner_avatars"][0]        # first winner once it's over
+            elif g.get("host_avatar"):
+                thumb = g["host_avatar"]               # the host while it runs
+            tag = "GIVEAWAY ENDED" if ended else "GIVEAWAY"
+            header = [T(f"-# {tag}"), T(f"# {g['prize']}")]
+            kids.append(discord.ui.Section(*header, accessory=discord.ui.Thumbnail(thumb)) if thumb else header[0])
+            if not thumb:
+                kids.append(header[1])
+
+            # --- banner
+            if os.path.exists(BANNER_FILE):
+                kids.append(discord.ui.MediaGallery(discord.MediaGalleryItem(f"attachment://{BANNER_NAME}")))
+
+            kids.append(sep())
+
+            # --- details
+            lines = []
+            if ended:
+                winners = g.get("winner_ids", [])
+                lines.append(f"**Hosted by**  <@{g['host_id']}>")
+                lines.append(f"**Ended**  <t:{g.get('ended_ts', g['end_ts'])}:R>")
+                lines.append("")
+                if winners:
+                    lines.append(f"**{'Winner' if len(winners) == 1 else 'Winners'}**")
+                    lines.extend(f"<@{i}>" for i in winners)
+                else:
+                    lines.append("**No valid entries**")
+            else:
+                lines.append("Press the button below to enter!")
+                lines.append("")
+                lines.append(f"**Hosted by**  <@{g['host_id']}>")
+                lines.append(f"**Winners**  {g['winners']}")
+                if g.get("required_role"):
+                    lines.append(f"**Required role**  <@&{g['required_role']}>")
+                lines.append(f"**Ends**  <t:{g['end_ts']}:R>  (<t:{g['end_ts']}:f>)")
+            kids.append(T("\n".join(lines)))
+
+            kids.append(sep())
+            kids.append(T(entries_heading(len(g["entries"]))))
+
+        kids.append(EnterRow(disabled=ended))
+        if g:
+            kids.append(discord.ui.TextDisplay(f"-# {FOOTER}"))
+
+        self.add_item(discord.ui.Container(*kids, accent_color=END_COLOR if ended else COLOR))
+
+
+async def refresh(msg: Optional[discord.Message], g: dict):
+    """Re-draw the giveaway card (entries count, winners, ended state)."""
+    if msg is None or not g.get("v3"):
+        return   # giveaways made with v2 keep their old message
+    try:
+        await msg.edit(view=GiveawayView(g), allowed_mentions=NO_PINGS)
+    except discord.HTTPException as e:
+        print(f"Couldn't update the giveaway card: {e}")
+
+
+# ---------- entering / leaving ----------
+def has_role(user, role_id: Optional[int]) -> bool:
+    return not role_id or any(r.id == role_id for r in getattr(user, "roles", []))
+
+
+class EntryPanel(discord.ui.View):
+    """Private panel (only you see it). One button that flips: Leave giveaway <-> Enter again."""
+
+    def __init__(self, mid: str, uid: int, message: discord.Message):
+        super().__init__(timeout=600)
+        self.mid, self.uid, self.message = mid, uid, message
+        self._sync()
+
+    def _sync(self):
+        g = giveaways.get(self.mid)
+        inside = bool(g) and self.uid in g["entries"]
+        self.toggle.label = "Leave giveaway" if inside else "Enter again"
+        self.toggle.style = discord.ButtonStyle.danger if inside else discord.ButtonStyle.success
+        self.toggle.emoji = None if inside else GIFT_EMOJI
+
+    @discord.ui.button(label="Leave giveaway", style=discord.ButtonStyle.danger)
+    async def toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+        g = giveaways.get(self.mid)
+        if not g or g["ended"]:
+            return await interaction.response.edit_message(embed=note("This giveaway has ended."), view=None)
+
+        if self.uid in g["entries"]:
+            g["entries"].remove(self.uid)
+            text = "### You left the giveaway\nChanged your mind? Press **Enter again**."
+        else:
+            if not has_role(interaction.user, g.get("required_role")):
+                return await interaction.response.edit_message(
+                    embed=note(f"You need <@&{g['required_role']}> to enter this giveaway."), view=None
+                )
+            g["entries"].append(self.uid)
+            text = f"### You're in\nGood luck! You are one of **{len(g['entries']):,}** entries."
+        save()
+        self._sync()
+        await interaction.response.edit_message(embed=note(text), view=self)
+        await refresh(self.message, g)
+
+
+async def handle_enter(interaction: discord.Interaction):
+    mid = str(interaction.message.id)
+    g = giveaways.get(mid)
+    if not g or g["ended"]:
+        return await interaction.response.send_message(embed=note("This giveaway has ended."), ephemeral=True)
+
+    if not has_role(interaction.user, g.get("required_role")):
+        return await interaction.response.send_message(
+            embed=note(f"You need <@&{g['required_role']}> to enter this giveaway."), ephemeral=True
+        )
+
+    uid = interaction.user.id
+    if uid in g["entries"]:
+        text = "### You're already in\nPress **Leave giveaway** if you want to drop out."
+    else:
+        g["entries"].append(uid)
+        save()
+        text = f"### You're in\nGood luck! You are one of **{len(g['entries']):,}** entries."
+
+    panel = EntryPanel(mid, uid, interaction.message)
+    await interaction.response.send_message(embed=note(text), view=panel, ephemeral=True)
+    await refresh(interaction.message, g)
 
 
 # ---------- winner messages ----------
@@ -212,16 +317,15 @@ def winner_embed(user, uid: int, g: dict, url: str) -> discord.Embed:
 
 
 async def announce_winners(bot: commands.Bot, guild, msg: discord.Message, g: dict, winner_ids: list[int], url: str):
-    """Posts one 'Congratulations' embed per winner (with their avatar) as a reply, and DMs them."""
+    """One 'Congratulations' embed per winner (with their avatar) as a reply, plus a DM."""
     users = [await resolve_user(bot, guild, uid) for uid in winner_ids]
-    avatars = [avatar_url(u) for u in users]
 
     for start in range(0, len(winner_ids), 10):          # Discord allows 10 embeds per message
         ids = winner_ids[start:start + 10]
         embeds = [winner_embed(users[start + k], uid, g, url) for k, uid in enumerate(ids)]
         try:
             await msg.reply(
-                content=" ".join(f"<@{u}>" for u in ids),    # the ping (mentions inside embeds don't notify)
+                content=" ".join(f"<@{u}>" for u in ids),    # the ping
                 embeds=embeds,
                 mention_author=False,
                 allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
@@ -243,9 +347,7 @@ async def announce_winners(bot: commands.Bot, guild, msg: discord.Message, g: di
             try:
                 await u.send(embed=dm)
             except (discord.Forbidden, discord.HTTPException):
-                pass   # DMs closed
-
-    return avatars
+                pass
 
 
 async def get_giveaway_message(bot: commands.Bot, g: dict, mid: str) -> Optional[discord.Message]:
@@ -259,40 +361,6 @@ async def get_giveaway_message(bot: commands.Bot, g: dict, mid: str) -> Optional
         return await channel.fetch_message(int(mid))
     except discord.HTTPException:
         return None
-
-
-class GiveawayView(discord.ui.View):
-    def __init__(self, disabled: bool = False):
-        super().__init__(timeout=None)
-        self.enter.disabled = disabled
-        if disabled:
-            self.enter.label = "Ended"
-
-    @discord.ui.button(label="Enter", emoji=GIFT_EMOJI, style=discord.ButtonStyle.secondary, custom_id="giveaway:enter")
-    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
-        g = giveaways.get(str(interaction.message.id))
-        if not g or g["ended"]:
-            return await interaction.response.send_message(embed=note("This giveaway has ended."), ephemeral=True)
-
-        role_id = g.get("required_role")
-        if role_id and not any(r.id == role_id for r in getattr(interaction.user, "roles", [])):
-            return await interaction.response.send_message(
-                embed=note(f"You need <@&{role_id}> to enter this giveaway."), ephemeral=True
-            )
-
-        uid = interaction.user.id
-        if uid in g["entries"]:
-            g["entries"].remove(uid)
-            text = "### You left the giveaway\nClick **Enter** again if you change your mind."
-        else:
-            g["entries"].append(uid)
-            text = f"### You're in\nGood luck! You are one of **{len(g['entries']):,}** entries.\nClick **Enter** again to leave."
-        save()
-        await interaction.response.send_message(embed=note(text), ephemeral=True)
-        try:
-            await interaction.message.edit(embed=build_embed(g))
-        except discord.HTTPException as e:
-            print(f"Couldn't update the entry count: {e}")
 
 
 async def finish(bot: commands.Bot, mid: str):
@@ -311,10 +379,7 @@ async def finish(bot: commands.Bot, mid: str):
     msg = await get_giveaway_message(bot, g, mid)
     if msg is None:
         return
-    try:
-        await msg.edit(embed=build_embed(g), view=GiveawayView(disabled=True))
-    except discord.HTTPException as e:
-        print(f"Couldn't edit the ended giveaway: {e}")
+    await refresh(msg, g)
 
     url = jump_url(g, mid)
     if g["winner_ids"]:
@@ -337,12 +402,12 @@ async def finish(bot: commands.Bot, mid: str):
 class GiveawayBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.message_content = True  # must also be enabled in the Developer Portal
+        intents.message_content = True
         super().__init__(command_prefix=PREFIX, intents=intents, help_command=None)
 
     async def setup_hook(self):
         load()
-        self.add_view(GiveawayView())
+        self.add_view(GiveawayView())      # keeps the in-card Enter button alive after restarts
         self.checker.start()
 
     @tasks.loop(seconds=10)
@@ -356,7 +421,6 @@ class GiveawayBot(commands.Bot):
                 print(f"Giveaway {mid} failed to finish (will retry):")
                 traceback.print_exc()
 
-        # forget old ended giveaways (kept for a while so they can still be rerolled)
         changed = False
         for mid, g in list(giveaways.items()):
             if g["ended"]:
@@ -397,6 +461,7 @@ async def gstart(ctx: commands.Context, duration: str, winners: int, *, prize: s
         return await ctx.send(embed=note(f"The prize is too long (max {MAX_PRIZE_LEN} characters)."))
 
     g = {
+        "v3": True,                       # card format (Components V2)
         "guild_id": ctx.guild.id,
         "channel_id": ctx.channel.id,
         "prize": prize,
@@ -409,11 +474,10 @@ async def gstart(ctx: commands.Context, duration: str, winners: int, *, prize: s
         "ended": False,
         "winner_ids": [],
     }
-    file = discord.File(BANNER_FILE, filename=BANNER_NAME) if os.path.exists(BANNER_FILE) else None
-    if file:
-        msg = await ctx.send(embed=build_embed(g), view=GiveawayView(), file=file)
-    else:
-        msg = await ctx.send(embed=build_embed(g), view=GiveawayView())
+    kwargs = {"view": GiveawayView(g), "allowed_mentions": NO_PINGS}
+    if os.path.exists(BANNER_FILE):
+        kwargs["file"] = discord.File(BANNER_FILE, filename=BANNER_NAME)
+    msg = await ctx.send(**kwargs)
     giveaways[str(msg.id)] = g
     save()
     try:
@@ -458,10 +522,7 @@ async def greroll(ctx: commands.Context, message_id: int, count: int = 1):
 
     msg = await get_giveaway_message(bot, g, mid)
     if msg is not None:
-        try:
-            await msg.edit(embed=build_embed(g))
-        except discord.HTTPException:
-            pass
+        await refresh(msg, g)
         await announce_winners(bot, ctx.guild, msg, g, new, jump_url(g, mid))
     else:
         await ctx.send(embeds=[winner_embed(u, uid, g, jump_url(g, mid)) for u, uid in zip(users, new)][:10])
