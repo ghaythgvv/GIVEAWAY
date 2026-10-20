@@ -12,10 +12,10 @@ Commands (need Manage Server):
 What's new in v3
     - The giveaway is ONE card (Discord "Components V2"): title, banner, details, the big entries
       number AND the Enter button are all inside the same purple card.
-    - Click Enter and you get a private panel with a Leave button. Click Leave and the same button
-      becomes "Enter again". Click Enter while you're already in and the panel offers Leave.
-      (Discord can't show a different label to every person on one shared button, so the toggle
-      lives in this private panel. The public button stays "Enter".)
+    - Enter and Leave are two buttons inside the card. Press Enter and your entry is counted, press
+      Leave and it is removed. No private messages: the entries number on the card just updates.
+      (Discord shows the same buttons to everyone, so one button can't say "Leave" only to people who
+      entered. Two buttons is the clean way to do it.)
     - Everything from v2 is kept: winner embeds with avatars, DMs, re-check at the end,
       reroll, cancel, 30-day archive.
 
@@ -149,7 +149,7 @@ async def pick_winners(guild: Optional[discord.Guild], g: dict, count: int, excl
 
 # ---------- the giveaway card ----------
 class EnterRow(discord.ui.ActionRow):
-    """The Enter button. It lives INSIDE the card."""
+    """Enter + Leave buttons. They live INSIDE the card, no private messages."""
 
     def __init__(self, disabled: bool = False):
         super().__init__()
@@ -157,10 +157,15 @@ class EnterRow(discord.ui.ActionRow):
             self.enter.disabled = True
             self.enter.label = "Ended"
             self.enter.emoji = None
+            self.remove_item(self.leave)
 
     @discord.ui.button(label="Enter", emoji=GIFT_EMOJI, style=discord.ButtonStyle.primary, custom_id="giveaway:enter")
     async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await handle_enter(interaction)
+        await set_entry(interaction, join=True)
+
+    @discord.ui.button(label="Leave", style=discord.ButtonStyle.secondary, custom_id="giveaway:leave")
+    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await set_entry(interaction, join=False)
 
 
 class GiveawayView(discord.ui.LayoutView):
@@ -240,65 +245,31 @@ def has_role(user, role_id: Optional[int]) -> bool:
     return not role_id or any(r.id == role_id for r in getattr(user, "roles", []))
 
 
-class EntryPanel(discord.ui.View):
-    """Private panel (only you see it). One button that flips: Leave giveaway <-> Enter again."""
-
-    def __init__(self, mid: str, uid: int, message: discord.Message):
-        super().__init__(timeout=600)
-        self.mid, self.uid, self.message = mid, uid, message
-        self._sync()
-
-    def _sync(self):
-        g = giveaways.get(self.mid)
-        inside = bool(g) and self.uid in g["entries"]
-        self.toggle.label = "Leave giveaway" if inside else "Enter again"
-        self.toggle.style = discord.ButtonStyle.danger if inside else discord.ButtonStyle.success
-        self.toggle.emoji = None if inside else GIFT_EMOJI
-
-    @discord.ui.button(label="Leave giveaway", style=discord.ButtonStyle.danger)
-    async def toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
-        g = giveaways.get(self.mid)
-        if not g or g["ended"]:
-            return await interaction.response.edit_message(embed=note("This giveaway has ended."), view=None)
-
-        if self.uid in g["entries"]:
-            g["entries"].remove(self.uid)
-            text = "### You left the giveaway\nChanged your mind? Press **Enter again**."
-        else:
-            if not has_role(interaction.user, g.get("required_role")):
-                return await interaction.response.edit_message(
-                    embed=note(f"You need <@&{g['required_role']}> to enter this giveaway."), view=None
-                )
-            g["entries"].append(self.uid)
-            text = f"### You're in\nGood luck! You are one of **{len(g['entries']):,}** entries."
-        save()
-        self._sync()
-        await interaction.response.edit_message(embed=note(text), view=self)
-        await refresh(self.message, g)
-
-
-async def handle_enter(interaction: discord.Interaction):
+async def set_entry(interaction: discord.Interaction, join: bool):
+    """Enter / Leave pressed. Silent: the card itself updates (entries count), nothing else is posted."""
     mid = str(interaction.message.id)
     g = giveaways.get(mid)
     if not g or g["ended"]:
         return await interaction.response.send_message(embed=note("This giveaway has ended."), ephemeral=True)
 
-    if not has_role(interaction.user, g.get("required_role")):
-        return await interaction.response.send_message(
-            embed=note(f"You need <@&{g['required_role']}> to enter this giveaway."), ephemeral=True
-        )
-
     uid = interaction.user.id
-    if uid in g["entries"]:
-        text = "### You're already in\nPress **Leave giveaway** if you want to drop out."
-    else:
-        g["entries"].append(uid)
+    if join:
+        if not has_role(interaction.user, g.get("required_role")):
+            return await interaction.response.send_message(
+                embed=note(f"You need <@&{g['required_role']}> to enter this giveaway."), ephemeral=True
+            )
+        if uid not in g["entries"]:
+            g["entries"].append(uid)
+            save()
+    elif uid in g["entries"]:
+        g["entries"].remove(uid)
         save()
-        text = f"### You're in\nGood luck! You are one of **{len(g['entries']):,}** entries."
 
-    panel = EntryPanel(mid, uid, interaction.message)
-    await interaction.response.send_message(embed=note(text), view=panel, ephemeral=True)
-    await refresh(interaction.message, g)
+    if g.get("v3"):
+        await interaction.response.edit_message(view=GiveawayView(g), allowed_mentions=NO_PINGS)
+    else:   # giveaway made with v2: its message can't be redrawn as a card
+        text = "### You're in" if join else "### You left the giveaway"
+        await interaction.response.send_message(embed=note(text), ephemeral=True)
 
 
 # ---------- winner messages ----------
